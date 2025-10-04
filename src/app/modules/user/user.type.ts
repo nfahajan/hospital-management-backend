@@ -17,7 +17,6 @@ export interface IUser extends Document {
   permissions: string[];
   status: "pending" | "approved" | "blocked" | "declined" | "hold";
   passwordChangedAt?: Date;
-  role: "doctor" | "patient";
   lastLoggedIn: Date;
   createdAt: Date;
   updatedAt: Date;
