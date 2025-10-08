@@ -106,17 +106,6 @@ export const validateCreateAppointment = (data: any) => {
     errors.push("isUrgent must be a boolean");
   }
 
-  // Estimated duration validation
-  if (data.estimatedDuration !== undefined) {
-    if (
-      typeof data.estimatedDuration !== "number" ||
-      data.estimatedDuration < 5 ||
-      data.estimatedDuration > 480
-    ) {
-      errors.push("Estimated duration must be between 5 and 480 minutes");
-    }
-  }
-
   return errors;
 };
 
@@ -221,27 +210,6 @@ export const validateUpdateAppointment = (data: any) => {
     errors.push("isUrgent must be a boolean");
   }
 
-  // Duration validation
-  if (data.estimatedDuration !== undefined) {
-    if (
-      typeof data.estimatedDuration !== "number" ||
-      data.estimatedDuration < 5 ||
-      data.estimatedDuration > 480
-    ) {
-      errors.push("Estimated duration must be between 5 and 480 minutes");
-    }
-  }
-
-  if (data.actualDuration !== undefined) {
-    if (
-      typeof data.actualDuration !== "number" ||
-      data.actualDuration < 0 ||
-      data.actualDuration > 480
-    ) {
-      errors.push("Actual duration must be between 0 and 480 minutes");
-    }
-  }
-
   // Payment status validation
   const validPaymentStatuses = ["pending", "paid", "refunded"];
   if (
@@ -316,6 +284,35 @@ export const validateDate = (date: string) => {
   if (isNaN(dateObj.getTime())) {
     return "Invalid date format";
   }
+  return null;
+};
+
+// Validation for duplicate patient appointments at same time slot
+export const validateDuplicatePatientAppointment = async (
+  patientId: string,
+  appointmentDate: string,
+  startTime: string,
+  endTime: string,
+  excludeAppointmentId?: string
+) => {
+  const { Appointment } = await import("./appointment.model");
+
+  const targetDate = new Date(appointmentDate);
+  targetDate.setHours(0, 0, 0, 0);
+
+  const existingAppointment = await Appointment.findOne({
+    patient: patientId,
+    appointmentDate: targetDate,
+    startTime,
+    endTime,
+    status: { $in: ["scheduled", "confirmed", "in_progress"] },
+    _id: { $ne: excludeAppointmentId },
+  });
+
+  if (existingAppointment) {
+    return "You already have an appointment booked for this time slot. Please choose a different time.";
+  }
+
   return null;
 };
 

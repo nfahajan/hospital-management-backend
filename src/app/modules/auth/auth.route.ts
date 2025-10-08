@@ -12,5 +12,6 @@ router.post("/change-password", auth, AuthController.changePassword);
 router.post("/reset-password", auth, AuthController.resetPassword);
 
 router.get("/me", auth, AuthController.getselfInfo);
+router.put("/me", auth, AuthController.updateProfile);
 
 export const AuthRoute = router;

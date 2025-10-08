@@ -42,45 +42,45 @@ const validateUpdateScheduleMiddleware = (req: any, res: any, next: any) => {
 };
 
 const validateScheduleIdMiddleware = (req: any, res: any, next: any) => {
-  const error = validateScheduleId(req.params.id);
-  if (error) {
+  const errors = validateScheduleId(req.params);
+  if (errors.length > 0) {
     return sendResponse(res, {
       statusCode: StatusCodes.BAD_REQUEST,
       success: false,
-      message: error,
-      data: null,
+      message: "Validation failed",
+      data: { errors },
     });
   }
   next();
 };
 
 const validateDoctorIdMiddleware = (req: any, res: any, next: any) => {
-  const error = validateDoctorId(req.params.doctorId);
-  if (error) {
+  const errors = validateDoctorId(req.params);
+  if (errors.length > 0) {
     return sendResponse(res, {
       statusCode: StatusCodes.BAD_REQUEST,
       success: false,
-      message: error,
-      data: null,
+      message: "Validation failed",
+      data: { errors },
     });
   }
   next();
 };
 
 const validateDateMiddleware = (req: any, res: any, next: any) => {
-  const error = validateDate(req.params.date);
-  if (error) {
+  const errors = validateDate(req.params);
+  if (errors.length > 0) {
     return sendResponse(res, {
       statusCode: StatusCodes.BAD_REQUEST,
       success: false,
-      message: error,
-      data: null,
+      message: "Validation failed",
+      data: { errors },
     });
   }
   next();
 };
 
-// Public route - Get available slots for a doctor on a specific date
+// Public routes (no authentication required)
 router.get(
   "/doctor/:doctorId/available-slots/:date",
   validateDoctorIdMiddleware,
@@ -101,22 +101,64 @@ router.get(
   ScheduleController.getMyAvailableSlots
 );
 
-// Create a new schedule
+// Get current doctor's schedule analytics
+router.get("/my-analytics", ScheduleController.getScheduleAnalytics);
+
+// Get current doctor's schedule preferences
+router.get("/my-preferences", ScheduleController.getSchedulePreferences);
+
+// Check if schedule exists for a specific date
+router.get("/my-schedule/check/:date", ScheduleController.checkScheduleExists);
+
+// Update current doctor's schedule preferences
+router.put("/my-preferences", ScheduleController.updateSchedulePreferences);
+
+// Generate schedules for date range (doctor only)
+router.post("/generate", ScheduleController.generateSchedulesForDateRange);
+
+// Create my schedule (doctor only)
+router.post(
+  "/my-schedule",
+  validateCreateScheduleMiddleware,
+  ScheduleController.createMySchedule
+);
+
+// Update my schedule (doctor only - own schedules)
+router.put(
+  "/my-schedule/:id",
+  validateScheduleIdMiddleware,
+  validateUpdateScheduleMiddleware,
+  ScheduleController.updateMySchedule
+);
+
+// Delete my schedule (doctor only - own schedules)
+router.delete(
+  "/my-schedule/:id",
+  validateScheduleIdMiddleware,
+  ScheduleController.deleteMySchedule
+);
+
+// Admin only routes
+router.use(hasRole("admin"));
+
+// Create schedule (admin only)
 router.post(
   "/",
   validateCreateScheduleMiddleware,
   ScheduleController.createSchedule
 );
 
-// Update specific day schedule
-router.put(
-  "/:id/day/:dayOfWeek",
+// Get all schedules (admin only)
+router.get("/", ScheduleController.getAllSchedules);
+
+// Get schedule by ID (admin only)
+router.get(
+  "/:id",
   validateScheduleIdMiddleware,
-  validateUpdateScheduleMiddleware,
-  ScheduleController.updateDaySchedule
+  ScheduleController.getScheduleById
 );
 
-// Update schedule
+// Update any schedule (admin only)
 router.put(
   "/:id",
   validateScheduleIdMiddleware,
@@ -124,24 +166,14 @@ router.put(
   ScheduleController.updateSchedule
 );
 
-// Get schedule by ID
-router.get(
-  "/:id",
-  validateScheduleIdMiddleware,
-  ScheduleController.getScheduleById
-);
-
-// Delete schedule
+// Delete any schedule (admin only)
 router.delete(
   "/:id",
   validateScheduleIdMiddleware,
   ScheduleController.deleteSchedule
 );
 
-// Admin only routes
-router.use(hasRole("admin", "superadmin"));
+// Clean up old schedules (admin only)
+router.post("/cleanup", ScheduleController.cleanupOldSchedules);
 
-// Get all schedules
-router.get("/", ScheduleController.getAllSchedules);
-
-export const ScheduleRoute = router;
+export default router;

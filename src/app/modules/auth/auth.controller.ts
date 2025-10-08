@@ -7,6 +7,7 @@ import UnauthenticatedError from "../../errors/unauthenticated";
 import CustomAPIError from "../../errors/custom-api";
 import { StatusCodes } from "http-status-codes";
 import NotFoundError from "../../errors/not-found";
+import ForbiddenError from "../../errors/forbidden";
 import { ILogin } from "./auth.type";
 
 // login user
@@ -287,6 +288,33 @@ const getselfInfo = async (req: Request, res: Response) => {
   });
 };
 
+const updateProfile = async (req: Request, res: Response) => {
+  const currentUser = req.user;
+  if (!currentUser) {
+    throw new ForbiddenError("Access denied");
+  }
+
+  const updateData = req.body;
+
+  // Update user profile fields
+  const updatedUser = await User.findByIdAndUpdate(
+    currentUser._id,
+    updateData,
+    { new: true, runValidators: true }
+  ).select("-password");
+
+  if (!updatedUser) {
+    throw new NotFoundError("User not found");
+  }
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Profile updated successfully",
+    data: updatedUser,
+  });
+};
+
 export const AuthController = {
   login,
   register,
@@ -294,6 +322,6 @@ export const AuthController = {
   changePassword,
   adminResetPassword,
   resetPassword,
-
   getselfInfo,
+  updateProfile,
 };

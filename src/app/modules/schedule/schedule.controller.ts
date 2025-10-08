@@ -2,78 +2,59 @@ import { Request, Response } from "express";
 import { StatusCodes } from "http-status-codes";
 import { Schedule } from "./schedule.model";
 import { Doctor } from "../doctor/doctor.model";
+import { ScheduleGenerationService } from "./schedule-generation.service";
 import sendResponse from "../../shared/sendResponse";
+import {
+  validateCreateSchedule,
+  validateUpdateSchedule,
+  validateScheduleId,
+  validateDoctorId,
+  validateDate,
+} from "./schedule.validation";
 import CustomAPIError from "../../errors/custom-api";
 import NotFoundError from "../../errors/not-found";
-import ForbiddenError from "../../errors/forbidden";
-import {
-  ICreateSchedule,
-  IUpdateSchedule,
-  IUpdateDaySchedule,
-} from "./schedule.type";
 
-// Create a new schedule (admin and doctor can create)
+// Create a new schedule
 const createSchedule = async (req: Request, res: Response) => {
-  const scheduleData: ICreateSchedule = req.body;
-  const currentUser = req.user;
+  const scheduleData = req.body;
 
-  if (!currentUser) {
-    throw new ForbiddenError("Access denied");
+  // Validate request data
+  const validationErrors = validateCreateSchedule(scheduleData);
+  if (validationErrors.length > 0) {
+    return sendResponse(res, {
+      statusCode: StatusCodes.BAD_REQUEST,
+      success: false,
+      message: "Validation failed",
+      data: { errors: validationErrors },
+    });
   }
 
   // Check if doctor exists
-  const doctor = await Doctor.findById(scheduleData.doctorId);
+  const doctor = await Doctor.findById(scheduleData.doctor);
   if (!doctor) {
     throw new NotFoundError("Doctor not found");
   }
 
-  // Check if user can create schedule for this doctor
-  const isAdmin =
-    currentUser.roles.includes("admin") ||
-    currentUser.roles.includes("superadmin");
-  const isOwnDoctor = doctor.user.toString() === currentUser._id.toString();
-
-  if (!isAdmin && !isOwnDoctor) {
-    throw new ForbiddenError(
-      "You can only create schedules for your own profile"
-    );
-  }
-
-  // Check for overlapping schedules
-  const existingSchedule = await Schedule.findOne({
-    doctor: scheduleData.doctorId,
-    weekStartDate: { $lte: new Date(scheduleData.weekEndDate) },
-    weekEndDate: { $gte: new Date(scheduleData.weekStartDate) },
-    isActive: true,
-  });
+  // Check if schedule already exists for this doctor and date
+  const existingSchedule = await Schedule.findByDoctorAndDate(
+    scheduleData.doctor,
+    new Date(scheduleData.date)
+  );
 
   if (existingSchedule) {
     throw new CustomAPIError(
-      "A schedule already exists for this week",
+      "Schedule already exists for this doctor and date",
       StatusCodes.CONFLICT
     );
   }
 
-  // Create schedule record
+  // Create new schedule
   const newSchedule = new Schedule({
-    doctor: scheduleData.doctorId,
-    weekStartDate: new Date(scheduleData.weekStartDate),
-    weekEndDate: new Date(scheduleData.weekEndDate),
-    monday: scheduleData.monday,
-    tuesday: scheduleData.tuesday,
-    wednesday: scheduleData.wednesday,
-    thursday: scheduleData.thursday,
-    friday: scheduleData.friday,
-    saturday: scheduleData.saturday,
-    sunday: scheduleData.sunday,
-    isActive: scheduleData.isActive ?? true,
-    notes: scheduleData.notes,
+    ...scheduleData,
+    date: new Date(scheduleData.date),
   });
 
   const savedSchedule = await newSchedule.save();
-
-  // Populate doctor data for response
-  await savedSchedule.populate("doctor", "firstName lastName specialization");
 
   sendResponse(res, {
     statusCode: StatusCodes.CREATED,
@@ -83,48 +64,33 @@ const createSchedule = async (req: Request, res: Response) => {
   });
 };
 
-// Get all schedules (admin only)
+// Get all schedules
 const getAllSchedules = async (req: Request, res: Response) => {
-  const { page = 1, limit = 10, doctorId, isActive } = req.query as any;
+  const { page = 1, limit = 10, doctor, date, isActive } = req.query;
 
-  // Build filter object
   const filter: any = {};
+  if (doctor) filter.doctor = doctor;
+  if (date) filter.date = new Date(date as string);
+  if (isActive !== undefined) filter.isActive = isActive === "true";
 
-  if (doctorId) {
-    filter.doctor = doctorId;
-  }
-
-  if (isActive !== undefined) {
-    filter.isActive = isActive === "true";
-  }
-
-  // Calculate pagination
-  const skip = (page - 1) * limit;
-
-  // Get schedules with pagination
   const schedules = await Schedule.find(filter)
     .populate("doctor", "firstName lastName specialization")
-    .sort({ weekStartDate: -1 })
-    .skip(skip)
-    .limit(limit);
+    .sort({ date: -1 })
+    .limit(Number(limit))
+    .skip((Number(page) - 1) * Number(limit));
 
-  // Get total count for pagination
-  const totalSchedules = await Schedule.countDocuments(filter);
-  const totalPages = Math.ceil(totalSchedules / limit);
+  const total = await Schedule.countDocuments(filter);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
     success: true,
     message: "Schedules retrieved successfully",
-    data: {
-      schedules,
-      pagination: {
-        currentPage: page,
-        totalPages,
-        totalSchedules,
-        hasNextPage: page < totalPages,
-        hasPrevPage: page > 1,
-      },
+    data: schedules,
+    meta: {
+      page: Number(page),
+      limit: Number(limit),
+      total,
+      totalPage: Math.ceil(total / Number(limit)),
     },
   });
 };
@@ -133,6 +99,16 @@ const getAllSchedules = async (req: Request, res: Response) => {
 const getScheduleById = async (req: Request, res: Response) => {
   const { id } = req.params;
 
+  const validationErrors = validateScheduleId({ id });
+  if (validationErrors.length > 0) {
+    return sendResponse(res, {
+      statusCode: StatusCodes.BAD_REQUEST,
+      success: false,
+      message: "Validation failed",
+      data: { errors: validationErrors },
+    });
+  }
+
   const schedule = await Schedule.findById(id).populate(
     "doctor",
     "firstName lastName specialization"
@@ -140,23 +116,6 @@ const getScheduleById = async (req: Request, res: Response) => {
 
   if (!schedule) {
     throw new NotFoundError("Schedule not found");
-  }
-
-  // Check if user can access this schedule
-  const currentUser = req.user;
-  if (!currentUser) {
-    throw new ForbiddenError("Access denied");
-  }
-
-  // Allow access if user is admin or the doctor themselves
-  const isAdmin =
-    currentUser.roles.includes("admin") ||
-    currentUser.roles.includes("superadmin");
-  const isOwnDoctor =
-    schedule.doctor.user.toString() === currentUser._id.toString();
-
-  if (!isAdmin && !isOwnDoctor) {
-    throw new ForbiddenError("Access denied");
   }
 
   sendResponse(res, {
@@ -171,116 +130,195 @@ const getScheduleById = async (req: Request, res: Response) => {
 const getMySchedules = async (req: Request, res: Response) => {
   const currentUser = req.user;
   if (!currentUser) {
-    throw new ForbiddenError("Access denied");
+    throw new CustomAPIError(
+      "Authentication required",
+      StatusCodes.UNAUTHORIZED
+    );
   }
 
-  // Find doctor profile
+  const { page = 1, limit = 10, date, isActive } = req.query;
+
+  // Find doctor by user ID
   const doctor = await Doctor.findOne({ user: currentUser._id });
   if (!doctor) {
-    throw new NotFoundError("Doctor profile not found");
+    throw new NotFoundError("Doctor not found");
   }
 
-  const { page = 1, limit = 10, isActive } = req.query as any;
-
-  // Build filter object
   const filter: any = { doctor: doctor._id };
+  if (date) filter.date = new Date(date as string);
+  if (isActive !== undefined) filter.isActive = isActive === "true";
 
-  if (isActive !== undefined) {
-    filter.isActive = isActive === "true";
-  }
-
-  // Calculate pagination
-  const skip = (page - 1) * limit;
-
-  // Get schedules with pagination
   const schedules = await Schedule.find(filter)
-    .populate("doctor", "firstName lastName specialization")
-    .sort({ weekStartDate: -1 })
-    .skip(skip)
-    .limit(limit);
+    .sort({ date: -1 })
+    .limit(Number(limit))
+    .skip((Number(page) - 1) * Number(limit));
 
-  // Get total count for pagination
-  const totalSchedules = await Schedule.countDocuments(filter);
-  const totalPages = Math.ceil(totalSchedules / limit);
+  const total = await Schedule.countDocuments(filter);
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
     success: true,
     message: "Schedules retrieved successfully",
-    data: {
-      schedules,
-      pagination: {
-        currentPage: page,
-        totalPages,
-        totalSchedules,
-        hasNextPage: page < totalPages,
-        hasPrevPage: page > 1,
-      },
+    data: schedules,
+    meta: {
+      page: Number(page),
+      limit: Number(limit),
+      total,
+      totalPage: Math.ceil(total / Number(limit)),
     },
   });
 };
 
-// Update schedule
-const updateSchedule = async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const updateData: IUpdateSchedule = req.body;
+// Check if schedule exists for a specific date
+const checkScheduleExists = async (req: Request, res: Response) => {
   const currentUser = req.user;
-
   if (!currentUser) {
-    throw new ForbiddenError("Access denied");
+    throw new CustomAPIError(
+      "Authentication required",
+      StatusCodes.UNAUTHORIZED
+    );
   }
 
-  const schedule = await Schedule.findById(id).populate("doctor");
+  const { date } = req.params;
+
+  // Find doctor by user ID
+  const doctor = await Doctor.findOne({ user: currentUser._id });
+  if (!doctor) {
+    throw new NotFoundError("Doctor not found");
+  }
+
+  // Check if schedule exists for this doctor and date (including inactive schedules)
+  // Parse date in UTC to match how dates are stored in the database
+  const targetDate = new Date(date + "T00:00:00.000Z");
+
+  console.log(
+    `Checking schedule for doctor: ${
+      doctor._id
+    }, date: ${date}, targetDate: ${targetDate.toISOString()}`
+  );
+
+  const schedule = await Schedule.findOne({
+    doctor: doctor._id.toString(),
+    date: targetDate,
+  });
+
+  console.log(
+    `Schedule found:`,
+    schedule
+      ? { id: schedule._id, isActive: schedule.isActive, date: schedule.date }
+      : "null"
+  );
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: schedule ? "Schedule exists" : "No schedule found",
+    data: {
+      exists: !!schedule,
+      schedule: schedule || null,
+      date: date,
+      doctorId: doctor._id.toString(),
+    },
+  });
+};
+
+// Create my schedule (doctor only)
+const createMySchedule = async (req: Request, res: Response) => {
+  const currentUser = req.user;
+  if (!currentUser) {
+    throw new CustomAPIError(
+      "Authentication required",
+      StatusCodes.UNAUTHORIZED
+    );
+  }
+
+  const scheduleData = req.body;
+
+  // Find doctor by user ID
+  const doctor = await Doctor.findOne({ user: currentUser._id });
+  if (!doctor) {
+    throw new NotFoundError("Doctor not found");
+  }
+
+  // Validate request data
+  const validationErrors = validateCreateSchedule(scheduleData);
+  if (validationErrors.length > 0) {
+    return sendResponse(res, {
+      statusCode: StatusCodes.BAD_REQUEST,
+      success: false,
+      message: "Validation failed",
+      data: { errors: validationErrors },
+    });
+  }
+
+  // Check if schedule already exists for this doctor and date
+  const existingSchedule = await Schedule.findByDoctorAndDate(
+    doctor._id.toString(),
+    new Date(scheduleData.date)
+  );
+
+  if (existingSchedule) {
+    throw new CustomAPIError(
+      "Schedule already exists for this date",
+      StatusCodes.CONFLICT
+    );
+  }
+
+  // Create new schedule with doctor ID
+  const newSchedule = new Schedule({
+    ...scheduleData,
+    doctor: doctor._id.toString(),
+    date: new Date(scheduleData.date),
+  });
+
+  const savedSchedule = await newSchedule.save();
+
+  sendResponse(res, {
+    statusCode: StatusCodes.CREATED,
+    success: true,
+    message: "Schedule created successfully",
+    data: savedSchedule,
+  });
+};
+
+// Update my schedule (doctor only - own schedules)
+const updateMySchedule = async (req: Request, res: Response) => {
+  const currentUser = req.user;
+  if (!currentUser) {
+    throw new CustomAPIError(
+      "Authentication required",
+      StatusCodes.UNAUTHORIZED
+    );
+  }
+
+  const { id } = req.params;
+  const updateData = req.body;
+
+  // Find doctor by user ID
+  const doctor = await Doctor.findOne({ user: currentUser._id });
+  if (!doctor) {
+    throw new NotFoundError("Doctor not found");
+  }
+
+  // Find the schedule and verify ownership
+  const schedule = await Schedule.findById(id);
   if (!schedule) {
     throw new NotFoundError("Schedule not found");
   }
 
-  // Check if user can update this schedule
-  const isAdmin =
-    currentUser.roles.includes("admin") ||
-    currentUser.roles.includes("superadmin");
-  const isOwnDoctor =
-    schedule.doctor.user.toString() === currentUser._id.toString();
-
-  if (!isAdmin && !isOwnDoctor) {
-    throw new ForbiddenError("You can only update your own schedules");
+  // Check if the schedule belongs to the current doctor
+  if (schedule.doctor.toString() !== doctor._id.toString()) {
+    throw new CustomAPIError(
+      "You don't have permission to update this schedule",
+      StatusCodes.FORBIDDEN
+    );
   }
 
-  // Prepare update object
-  const updateObject: any = {};
-
-  if (updateData.weekStartDate)
-    updateObject.weekStartDate = new Date(updateData.weekStartDate);
-  if (updateData.weekEndDate)
-    updateObject.weekEndDate = new Date(updateData.weekEndDate);
-  if (updateData.isActive !== undefined)
-    updateObject.isActive = updateData.isActive;
-  if (updateData.notes !== undefined) updateObject.notes = updateData.notes;
-
-  // Handle day schedules
-  const days = [
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-    "sunday",
-  ];
-  days.forEach((day) => {
-    const dayUpdate = updateData[day as keyof IUpdateSchedule];
-    if (dayUpdate && typeof dayUpdate === "object") {
-      updateObject[day] = {
-        ...schedule[day as keyof typeof schedule],
-        ...dayUpdate,
-      };
-    }
-  });
-
-  const updatedSchedule = await Schedule.findByIdAndUpdate(id, updateObject, {
+  // Update the schedule
+  const updatedSchedule = await Schedule.findByIdAndUpdate(id, updateData, {
     new: true,
     runValidators: true,
-  }).populate("doctor", "firstName lastName specialization");
+  });
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
@@ -290,92 +328,81 @@ const updateSchedule = async (req: Request, res: Response) => {
   });
 };
 
-// Update specific day schedule
-const updateDaySchedule = async (req: Request, res: Response) => {
+// Update schedule (admin only - any schedule)
+const updateSchedule = async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { dayOfWeek } = req.params;
-  const updateData: IUpdateDaySchedule = req.body;
-  const currentUser = req.user;
+  const updateData = req.body;
 
-  if (!currentUser) {
-    throw new ForbiddenError("Access denied");
+  const validationErrors = validateScheduleId({ id });
+  if (validationErrors.length > 0) {
+    return sendResponse(res, {
+      statusCode: StatusCodes.BAD_REQUEST,
+      success: false,
+      message: "Validation failed",
+      data: { errors: validationErrors },
+    });
   }
 
-  const schedule = await Schedule.findById(id).populate("doctor");
+  const updateValidationErrors = validateUpdateSchedule(updateData);
+  if (updateValidationErrors.length > 0) {
+    return sendResponse(res, {
+      statusCode: StatusCodes.BAD_REQUEST,
+      success: false,
+      message: "Validation failed",
+      data: { errors: updateValidationErrors },
+    });
+  }
+
+  const schedule = await Schedule.findByIdAndUpdate(id, updateData, {
+    new: true,
+    runValidators: true,
+  });
+
   if (!schedule) {
     throw new NotFoundError("Schedule not found");
   }
-
-  // Check if user can update this schedule
-  const isAdmin =
-    currentUser.roles.includes("admin") ||
-    currentUser.roles.includes("superadmin");
-  const isOwnDoctor =
-    schedule.doctor.user.toString() === currentUser._id.toString();
-
-  if (!isAdmin && !isOwnDoctor) {
-    throw new ForbiddenError("You can only update your own schedules");
-  }
-
-  // Validate day of week
-  const validDays = [
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-    "sunday",
-  ];
-  if (!validDays.includes(dayOfWeek)) {
-    throw new CustomAPIError("Invalid day of week", StatusCodes.BAD_REQUEST);
-  }
-
-  // Prepare update object for the specific day
-  const updateObject: any = {};
-  updateObject[dayOfWeek] = {
-    ...schedule[dayOfWeek as keyof typeof schedule],
-    ...updateData,
-  };
-
-  const updatedSchedule = await Schedule.findByIdAndUpdate(id, updateObject, {
-    new: true,
-    runValidators: true,
-  }).populate("doctor", "firstName lastName specialization");
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
     success: true,
-    message: `${dayOfWeek} schedule updated successfully`,
-    data: updatedSchedule,
+    message: "Schedule updated successfully",
+    data: schedule,
   });
 };
 
-// Delete schedule
-const deleteSchedule = async (req: Request, res: Response) => {
-  const { id } = req.params;
+// Delete my schedule (doctor only - own schedules)
+const deleteMySchedule = async (req: Request, res: Response) => {
   const currentUser = req.user;
-
   if (!currentUser) {
-    throw new ForbiddenError("Access denied");
+    throw new CustomAPIError(
+      "Authentication required",
+      StatusCodes.UNAUTHORIZED
+    );
   }
 
-  const schedule = await Schedule.findById(id).populate("doctor");
+  const { id } = req.params;
+
+  // Find doctor by user ID
+  const doctor = await Doctor.findOne({ user: currentUser._id });
+  if (!doctor) {
+    throw new NotFoundError("Doctor not found");
+  }
+
+  // Find the schedule and verify ownership
+  const schedule = await Schedule.findById(id);
   if (!schedule) {
     throw new NotFoundError("Schedule not found");
   }
 
-  // Check if user can delete this schedule
-  const isAdmin =
-    currentUser.roles.includes("admin") ||
-    currentUser.roles.includes("superadmin");
-  const isOwnDoctor =
-    schedule.doctor.user.toString() === currentUser._id.toString();
-
-  if (!isAdmin && !isOwnDoctor) {
-    throw new ForbiddenError("You can only delete your own schedules");
+  // Check if the schedule belongs to the current doctor
+  if (schedule.doctor.toString() !== doctor._id.toString()) {
+    throw new CustomAPIError(
+      "You don't have permission to delete this schedule",
+      StatusCodes.FORBIDDEN
+    );
   }
 
+  // Delete the schedule
   await Schedule.findByIdAndDelete(id);
 
   sendResponse(res, {
@@ -386,9 +413,58 @@ const deleteSchedule = async (req: Request, res: Response) => {
   });
 };
 
-// Get available slots for a doctor on a specific date
+// Delete schedule (admin only - any schedule)
+const deleteSchedule = async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const validationErrors = validateScheduleId({ id });
+  if (validationErrors.length > 0) {
+    return sendResponse(res, {
+      statusCode: StatusCodes.BAD_REQUEST,
+      success: false,
+      message: "Validation failed",
+      data: { errors: validationErrors },
+    });
+  }
+
+  const schedule = await Schedule.findByIdAndDelete(id);
+
+  if (!schedule) {
+    throw new NotFoundError("Schedule not found");
+  }
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Schedule deleted successfully",
+    data: null,
+  });
+};
+
+// Get available slots for a specific doctor and date
 const getAvailableSlots = async (req: Request, res: Response) => {
   const { doctorId, date } = req.params;
+
+  // Validate parameters
+  const doctorValidationErrors = validateDoctorId({ doctorId });
+  if (doctorValidationErrors.length > 0) {
+    return sendResponse(res, {
+      statusCode: StatusCodes.BAD_REQUEST,
+      success: false,
+      message: "Validation failed",
+      data: { errors: doctorValidationErrors },
+    });
+  }
+
+  const dateValidationErrors = validateDate({ date });
+  if (dateValidationErrors.length > 0) {
+    return sendResponse(res, {
+      statusCode: StatusCodes.BAD_REQUEST,
+      success: false,
+      message: "Validation failed",
+      data: { errors: dateValidationErrors },
+    });
+  }
 
   // Validate date format
   const targetDate = new Date(date);
@@ -402,7 +478,6 @@ const getAvailableSlots = async (req: Request, res: Response) => {
     throw new NotFoundError("Doctor not found");
   }
 
-  // Get available slots using the static method
   const availableSlots = await Schedule.getAvailableSlots(doctorId, date);
 
   sendResponse(res, {
@@ -423,17 +498,31 @@ const getAvailableSlots = async (req: Request, res: Response) => {
 
 // Get current doctor's available slots
 const getMyAvailableSlots = async (req: Request, res: Response) => {
-  const { date } = req.params;
   const currentUser = req.user;
-
   if (!currentUser) {
-    throw new ForbiddenError("Access denied");
+    throw new CustomAPIError(
+      "Authentication required",
+      StatusCodes.UNAUTHORIZED
+    );
   }
 
-  // Find doctor profile
+  const { date } = req.params;
+
+  // Find doctor by user ID
   const doctor = await Doctor.findOne({ user: currentUser._id });
   if (!doctor) {
-    throw new NotFoundError("Doctor profile not found");
+    throw new NotFoundError("Doctor not found");
+  }
+
+  // Validate date
+  const dateValidationErrors = validateDate({ date });
+  if (dateValidationErrors.length > 0) {
+    return sendResponse(res, {
+      statusCode: StatusCodes.BAD_REQUEST,
+      success: false,
+      message: "Validation failed",
+      data: { errors: dateValidationErrors },
+    });
   }
 
   // Validate date format
@@ -442,7 +531,7 @@ const getMyAvailableSlots = async (req: Request, res: Response) => {
     throw new CustomAPIError("Invalid date format", StatusCodes.BAD_REQUEST);
   }
 
-  // Get available slots using the static method
+  // Get available slots
   const availableSlots = await Schedule.getAvailableSlots(
     doctor._id.toString(),
     date
@@ -464,14 +553,363 @@ const getMyAvailableSlots = async (req: Request, res: Response) => {
   });
 };
 
+// Get schedule analytics for current doctor
+const getScheduleAnalytics = async (req: Request, res: Response) => {
+  const currentUser = req.user;
+  if (!currentUser) {
+    throw new CustomAPIError(
+      "Authentication required",
+      StatusCodes.UNAUTHORIZED
+    );
+  }
+
+  const { dateFrom, dateTo, period = "7d" } = req.query as any;
+
+  // Find doctor by user ID
+  const doctor = await Doctor.findOne({ user: currentUser._id });
+  if (!doctor) {
+    throw new NotFoundError("Doctor not found");
+  }
+
+  // Calculate date range based on period
+  const now = new Date();
+  let startDate: Date;
+  let endDate: Date = now;
+
+  switch (period) {
+    case "7d":
+      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      break;
+    case "30d":
+      startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      break;
+    case "90d":
+      startDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+      break;
+    default:
+      startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  }
+
+  // Override with custom date range if provided
+  if (dateFrom) startDate = new Date(dateFrom);
+  if (dateTo) endDate = new Date(dateTo);
+
+  // Get schedules in date range
+  const schedules = await Schedule.find({
+    doctor: doctor._id,
+    date: { $gte: startDate, $lte: endDate },
+  }).sort({ date: 1 });
+
+  // Get appointments for the same period
+  const { Appointment } = await import("../appointment/appointment.model");
+  const appointments = await Appointment.find({
+    doctor: doctor._id,
+    appointmentDate: { $gte: startDate, $lte: endDate },
+  })
+    .populate("patient", "firstName lastName")
+    .sort({ appointmentDate: 1, startTime: 1 });
+
+  // Calculate analytics
+  const analytics = {
+    period: {
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString(),
+      days: Math.ceil(
+        (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
+      ),
+    },
+    schedules: {
+      total: schedules.length,
+      active: schedules.filter((s) => s.isActive).length,
+      totalSlots: schedules.reduce((acc, s) => acc + s.timeSlots.length, 0),
+      availableSlots: schedules.reduce(
+        (acc, s) => acc + s.timeSlots.filter((slot) => slot.isAvailable).length,
+        0
+      ),
+    },
+    appointments: {
+      total: appointments.length,
+      completed: appointments.filter((a) => a.status === "completed").length,
+      cancelled: appointments.filter((a) => a.status === "cancelled").length,
+      scheduled: appointments.filter((a) => a.status === "scheduled").length,
+      confirmed: appointments.filter((a) => a.status === "confirmed").length,
+      noShow: appointments.filter((a) => a.status === "no_show").length,
+    },
+    utilization: {
+      overall: 0,
+      completionRate: 0,
+      cancellationRate: 0,
+      noShowRate: 0,
+    },
+    dailyStats: [] as any[],
+    timeSlotStats: [] as any[],
+    dayOfWeekStats: [] as any[],
+  };
+
+  // Calculate utilization rates
+  if (analytics.schedules.totalSlots > 0) {
+    analytics.utilization.overall = Math.round(
+      (analytics.appointments.total / analytics.schedules.totalSlots) * 100
+    );
+  }
+
+  if (analytics.appointments.total > 0) {
+    analytics.utilization.completionRate = Math.round(
+      (analytics.appointments.completed / analytics.appointments.total) * 100
+    );
+    analytics.utilization.cancellationRate = Math.round(
+      (analytics.appointments.cancelled / analytics.appointments.total) * 100
+    );
+    analytics.utilization.noShowRate = Math.round(
+      (analytics.appointments.noShow / analytics.appointments.total) * 100
+    );
+  }
+
+  // Generate daily stats
+  const currentDate = new Date(startDate);
+  while (currentDate <= endDate) {
+    const dateStr = currentDate.toISOString().split("T")[0];
+    const daySchedules = schedules.filter(
+      (s) => s.date.toISOString().split("T")[0] === dateStr
+    );
+    const dayAppointments = appointments.filter(
+      (a) => a.appointmentDate.toISOString().split("T")[0] === dateStr
+    );
+
+    const totalSlots = daySchedules.reduce(
+      (acc, s) => acc + s.timeSlots.filter((slot) => slot.isAvailable).length,
+      0
+    );
+    const bookedSlots = dayAppointments.length;
+
+    analytics.dailyStats.push({
+      date: dateStr,
+      day: currentDate.toLocaleDateString("en-US", { weekday: "short" }),
+      totalSlots,
+      bookedSlots,
+      utilization:
+        totalSlots > 0 ? Math.round((bookedSlots / totalSlots) * 100) : 0,
+      completed: dayAppointments.filter((a) => a.status === "completed").length,
+      cancelled: dayAppointments.filter((a) => a.status === "cancelled").length,
+    });
+
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+
+  // Generate time slot stats (9 AM to 5 PM)
+  for (let hour = 9; hour < 17; hour++) {
+    const timeSlot = `${hour.toString().padStart(2, "0")}:00`;
+    const slotAppointments = appointments.filter(
+      (a) => a.startTime === timeSlot
+    );
+
+    analytics.timeSlotStats.push({
+      time: timeSlot,
+      appointments: slotAppointments.length,
+      completed: slotAppointments.filter((a) => a.status === "completed")
+        .length,
+      cancelled: slotAppointments.filter((a) => a.status === "cancelled")
+        .length,
+      revenue:
+        slotAppointments.filter((a) => a.status === "completed").length * 100, // Assuming $100 per completed appointment
+    });
+  }
+
+  // Generate day of week stats
+  const dayNames = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+  ];
+  dayNames.forEach((dayName, index) => {
+    const dayAppointments = appointments.filter(
+      (a) => new Date(a.appointmentDate).getDay() === index
+    );
+
+    analytics.dayOfWeekStats.push({
+      day: dayName,
+      appointments: dayAppointments.length,
+      completed: dayAppointments.filter((a) => a.status === "completed").length,
+      cancelled: dayAppointments.filter((a) => a.status === "cancelled").length,
+    });
+  });
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Schedule analytics retrieved successfully",
+    data: analytics,
+  });
+};
+
+// Generate schedules for date range (doctor only)
+const generateSchedulesForDateRange = async (req: Request, res: Response) => {
+  const currentUser = req.user;
+  if (!currentUser) {
+    throw new CustomAPIError(
+      "Authentication required",
+      StatusCodes.UNAUTHORIZED
+    );
+  }
+
+  const { startDate, endDate, preferences } = req.body;
+
+  // Find doctor by user ID
+  const doctor = await Doctor.findOne({ user: currentUser._id });
+  if (!doctor) {
+    throw new NotFoundError("Doctor not found");
+  }
+
+  try {
+    const schedules =
+      await ScheduleGenerationService.generateSchedulesForDateRange(
+        doctor._id.toString(),
+        new Date(startDate),
+        new Date(endDate),
+        preferences
+      );
+
+    sendResponse(res, {
+      statusCode: StatusCodes.CREATED,
+      success: true,
+      message: "Schedules generated successfully",
+      data: { schedules, count: schedules.length },
+    });
+  } catch (error) {
+    console.error("Error generating schedules:", error);
+    throw new CustomAPIError(
+      "Failed to generate schedules",
+      StatusCodes.INTERNAL_SERVER_ERROR
+    );
+  }
+};
+
+// Clean up old schedules (admin only)
+const cleanupOldSchedules = async (req: Request, res: Response) => {
+  try {
+    await ScheduleGenerationService.cleanupOldSchedules();
+
+    sendResponse(res, {
+      statusCode: StatusCodes.OK,
+      success: true,
+      message: "Old schedules cleaned up successfully",
+      data: null,
+    });
+  } catch (error) {
+    console.error("Error cleaning up schedules:", error);
+    throw new CustomAPIError(
+      "Failed to cleanup old schedules",
+      StatusCodes.INTERNAL_SERVER_ERROR
+    );
+  }
+};
+
+// Get doctor schedule preferences
+const getSchedulePreferences = async (req: Request, res: Response) => {
+  const currentUser = req.user;
+  if (!currentUser) {
+    throw new CustomAPIError(
+      "Authentication required",
+      StatusCodes.UNAUTHORIZED
+    );
+  }
+
+  // Find doctor by user ID
+  const doctor = await Doctor.findOne({ user: currentUser._id });
+  if (!doctor) {
+    throw new NotFoundError("Doctor not found");
+  }
+
+  try {
+    const preferences = await ScheduleGenerationService.getDoctorPreferences(
+      doctor._id.toString()
+    );
+
+    sendResponse(res, {
+      statusCode: StatusCodes.OK,
+      success: true,
+      message: "Schedule preferences retrieved successfully",
+      data: preferences,
+    });
+  } catch (error) {
+    console.error("Error getting preferences:", error);
+    throw new CustomAPIError(
+      "Failed to get schedule preferences",
+      StatusCodes.INTERNAL_SERVER_ERROR
+    );
+  }
+};
+
+// Update doctor schedule preferences
+const updateSchedulePreferences = async (req: Request, res: Response) => {
+  const currentUser = req.user;
+  if (!currentUser) {
+    throw new CustomAPIError(
+      "Authentication required",
+      StatusCodes.UNAUTHORIZED
+    );
+  }
+
+  const { preferences } = req.body;
+
+  // Find doctor by user ID
+  const doctor = await Doctor.findOne({ user: currentUser._id });
+  if (!doctor) {
+    throw new NotFoundError("Doctor not found");
+  }
+
+  try {
+    await ScheduleGenerationService.updateDoctorPreferences(
+      doctor._id.toString(),
+      preferences
+    );
+
+    sendResponse(res, {
+      statusCode: StatusCodes.OK,
+      success: true,
+      message: "Schedule preferences updated successfully",
+      data: null,
+    });
+  } catch (error) {
+    console.error("Error updating preferences:", error);
+    throw new CustomAPIError(
+      "Failed to update schedule preferences",
+      StatusCodes.INTERNAL_SERVER_ERROR
+    );
+  }
+};
+
+// Utility function to create default schedule for a doctor
+const createDefaultSchedule = async (doctorId: string, date: Date) => {
+  try {
+    return await Schedule.createDefaultSchedule(doctorId, date);
+  } catch (error) {
+    console.error("Error creating default schedule:", error);
+    throw error;
+  }
+};
+
 export const ScheduleController = {
   createSchedule,
+  createMySchedule,
   getAllSchedules,
   getScheduleById,
   getMySchedules,
+  checkScheduleExists,
+  updateMySchedule,
   updateSchedule,
-  updateDaySchedule,
+  deleteMySchedule,
   deleteSchedule,
   getAvailableSlots,
   getMyAvailableSlots,
+  getScheduleAnalytics,
+  generateSchedulesForDateRange,
+  cleanupOldSchedules,
+  getSchedulePreferences,
+  updateSchedulePreferences,
+  createDefaultSchedule,
 };

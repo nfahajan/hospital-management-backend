@@ -69,7 +69,7 @@ router.get("/me", PatientController.getMyProfile);
 router.put(
   "/me",
   validateUpdatePatientMiddleware,
-  PatientController.updatePatient
+  PatientController.updateMyProfile
 );
 
 // Admin only routes

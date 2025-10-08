@@ -84,26 +84,19 @@ const appointmentSchema = new Schema<IAppointment, AppointmentModel>(
       trim: true,
       maxlength: [2000, "Notes cannot exceed 2000 characters"],
     },
+    diagnosis: {
+      type: String,
+      trim: true,
+      maxlength: [1000, "Diagnosis cannot exceed 1000 characters"],
+    },
+    prescription: {
+      type: String,
+      trim: true,
+      maxlength: [1000, "Prescription cannot exceed 1000 characters"],
+    },
     isUrgent: {
       type: Boolean,
       default: false,
-    },
-    estimatedDuration: {
-      type: Number,
-      required: [true, "Estimated duration is required"],
-      min: [5, "Duration must be at least 5 minutes"],
-      max: [480, "Duration cannot exceed 8 hours"],
-      default: 30,
-    },
-    actualDuration: {
-      type: Number,
-      min: [0, "Actual duration cannot be negative"],
-      max: [480, "Actual duration cannot exceed 8 hours"],
-    },
-    consultationFee: {
-      type: Number,
-      required: [true, "Consultation fee is required"],
-      min: [0, "Consultation fee cannot be negative"],
     },
     paymentStatus: {
       type: String,
@@ -140,6 +133,20 @@ appointmentSchema.index({ status: 1 });
 appointmentSchema.index({ doctor: 1, appointmentDate: 1 });
 appointmentSchema.index({ patient: 1, appointmentDate: 1 });
 appointmentSchema.index({ appointmentDate: 1, startTime: 1 });
+// Compound index for patient-specific time slot validation
+appointmentSchema.index({
+  patient: 1,
+  appointmentDate: 1,
+  startTime: 1,
+  endTime: 1,
+});
+// Compound index for doctor-specific time slot validation
+appointmentSchema.index({
+  doctor: 1,
+  appointmentDate: 1,
+  startTime: 1,
+  endTime: 1,
+});
 
 // Virtual for appointment duration
 appointmentSchema.virtual("duration").get(function () {
@@ -202,9 +209,11 @@ appointmentSchema.statics.checkSlotAvailability = async function (
   appointmentDate: string,
   startTime: string,
   endTime: string,
-  excludeAppointmentId?: string
+  excludeAppointmentId?: string,
+  patientId?: string
 ) {
   const targetDate = new Date(appointmentDate);
+  targetDate.setHours(0, 0, 0, 0);
 
   // Find the schedule for this doctor and date
   const { Schedule } = await import("../schedule/schedule.model");
@@ -214,18 +223,8 @@ appointmentSchema.statics.checkSlotAvailability = async function (
     return { available: false, reason: "No schedule found for this date" };
   }
 
-  // Get the day of week
-  const dayOfWeek = targetDate
-    .toLocaleDateString("en-US", { weekday: "long" })
-    .toLowerCase();
-  const daySchedule = schedule[dayOfWeek as keyof typeof schedule];
-
-  if (!daySchedule || !daySchedule.isWorkingDay) {
-    return { available: false, reason: "Doctor is not working on this day" };
-  }
-
   // Check if the requested time slot exists in the schedule
-  const requestedSlot = daySchedule.timeSlots.find(
+  const requestedSlot = schedule.timeSlots.find(
     (slot: any) => slot.startTime === startTime && slot.endTime === endTime
   );
 
@@ -240,7 +239,49 @@ appointmentSchema.statics.checkSlotAvailability = async function (
     return { available: false, reason: "Time slot is not available" };
   }
 
-  // Check current appointments for this slot
+  // Check if patient already has an appointment at this exact time slot
+  if (patientId) {
+    const existingPatientAppointment = await this.findOne({
+      patient: patientId,
+      appointmentDate: targetDate,
+      startTime,
+      endTime,
+      status: { $in: ["scheduled", "confirmed", "in_progress"] },
+      _id: { $ne: excludeAppointmentId },
+    });
+
+    if (existingPatientAppointment) {
+      return {
+        available: false,
+        reason:
+          "You already have an appointment booked for this time slot. Please choose a different time.",
+        currentAppointments: 0,
+        maxAppointments: 1,
+        existingAppointment: {
+          id: existingPatientAppointment._id,
+          date: existingPatientAppointment.appointmentDate,
+          startTime: existingPatientAppointment.startTime,
+          endTime: existingPatientAppointment.endTime,
+          status: existingPatientAppointment.status,
+          type: existingPatientAppointment.type,
+          reason: existingPatientAppointment.reason,
+          doctor: {
+            id: existingPatientAppointment.doctor._id,
+            name: `Dr. ${existingPatientAppointment.doctor.firstName} ${existingPatientAppointment.doctor.lastName}`,
+            specialization: existingPatientAppointment.doctor.specialization,
+            consultationFee: existingPatientAppointment.doctor.consultationFee,
+          },
+          patient: {
+            id: existingPatientAppointment.patient._id,
+            name: `${existingPatientAppointment.patient.firstName} ${existingPatientAppointment.patient.lastName}`,
+            phoneNumber: existingPatientAppointment.patient.phoneNumber,
+          },
+        },
+      };
+    }
+  }
+
+  // Check current appointments for this slot (general availability)
   const existingAppointments = await this.countDocuments({
     doctor: doctorId,
     appointmentDate: targetDate,
@@ -292,7 +333,6 @@ appointmentSchema.statics.getAppointmentStats = async function (
     cancelledAppointments,
     todayAppointments,
     upcomingAppointments,
-    revenue,
   ] = await Promise.all([
     this.countDocuments(filter),
     this.countDocuments({ ...filter, status: "scheduled" }),
@@ -308,10 +348,8 @@ appointmentSchema.statics.getAppointmentStats = async function (
       appointmentDate: { $gte: tomorrow },
       status: { $in: ["scheduled", "confirmed"] },
     }),
-    this.aggregate([
-      { $match: { ...filter, status: "completed", paymentStatus: "paid" } },
-      { $group: { _id: null, total: { $sum: "$consultationFee" } } },
-    ]),
+    // Revenue calculation removed since consultationFee is now in doctor profile
+    0,
   ]);
 
   return {
@@ -321,7 +359,7 @@ appointmentSchema.statics.getAppointmentStats = async function (
     cancelledAppointments,
     todayAppointments,
     upcomingAppointments,
-    revenue: revenue[0]?.total || 0,
+    revenue: 0, // Revenue calculation moved to doctor-based calculation
   };
 };
 

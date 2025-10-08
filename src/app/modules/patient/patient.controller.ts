@@ -40,11 +40,7 @@ const registerPatient = async (req: Request, res: Response) => {
     dateOfBirth: new Date(patientData.dateOfBirth),
     gender: patientData.gender,
     phoneNumber: patientData.phoneNumber,
-    address: patientData.address,
-    emergencyContact: patientData.emergencyContact,
     bloodGroup: patientData.bloodGroup,
-    allergies: patientData.allergies || [],
-    medicalHistory: patientData.medicalHistory || [],
   });
 
   const savedPatient = await newPatient.save();
@@ -176,7 +172,50 @@ const getMyProfile = async (req: Request, res: Response) => {
   });
 };
 
-// Update patient profile (patients can update their own info)
+// Update current patient's profile
+const updateMyProfile = async (req: Request, res: Response) => {
+  const updateData: IUpdatePatient = req.body;
+  const currentUser = req.user;
+
+  if (!currentUser) {
+    throw new ForbiddenError("Access denied");
+  }
+
+  // Find patient by current user ID
+  const patient = await Patient.findOne({ user: currentUser._id });
+  if (!patient) {
+    throw new NotFoundError("Patient profile not found");
+  }
+
+  // Prepare update object
+  const updateObject: any = {};
+
+  if (updateData.firstName) updateObject.firstName = updateData.firstName;
+  if (updateData.lastName) updateObject.lastName = updateData.lastName;
+  if (updateData.dateOfBirth)
+    updateObject.dateOfBirth = new Date(updateData.dateOfBirth);
+  if (updateData.gender) updateObject.gender = updateData.gender;
+  if (updateData.phoneNumber) updateObject.phoneNumber = updateData.phoneNumber;
+  if (updateData.bloodGroup) updateObject.bloodGroup = updateData.bloodGroup;
+
+  const updatedPatient = await Patient.findByIdAndUpdate(
+    patient._id,
+    updateObject,
+    {
+      new: true,
+      runValidators: true,
+    }
+  ).populate("user", "email roles status createdAt");
+
+  sendResponse(res, {
+    statusCode: StatusCodes.OK,
+    success: true,
+    message: "Profile updated successfully",
+    data: updatedPatient,
+  });
+};
+
+// Update patient profile (admin can update any patient)
 const updatePatient = async (req: Request, res: Response) => {
   const { id } = req.params;
   const updateData: IUpdatePatient = req.body;
@@ -191,14 +230,13 @@ const updatePatient = async (req: Request, res: Response) => {
     throw new NotFoundError("Patient not found");
   }
 
-  // Check if user can update this patient's data
+  // Check if user can update this patient's data (admin only)
   const isAdmin =
     currentUser.roles.includes("admin") ||
     currentUser.roles.includes("superadmin");
-  const isOwnProfile = patient.user.toString() === currentUser._id.toString();
 
-  if (!isAdmin && !isOwnProfile) {
-    throw new ForbiddenError("You can only update your own profile");
+  if (!isAdmin) {
+    throw new ForbiddenError("Only admins can update other patients");
   }
 
   // Prepare update object
@@ -211,21 +249,6 @@ const updatePatient = async (req: Request, res: Response) => {
   if (updateData.gender) updateObject.gender = updateData.gender;
   if (updateData.phoneNumber) updateObject.phoneNumber = updateData.phoneNumber;
   if (updateData.bloodGroup) updateObject.bloodGroup = updateData.bloodGroup;
-  if (updateData.allergies) updateObject.allergies = updateData.allergies;
-  if (updateData.medicalHistory)
-    updateObject.medicalHistory = updateData.medicalHistory;
-
-  // Handle nested objects
-  if (updateData.address) {
-    updateObject.address = { ...patient.address, ...updateData.address };
-  }
-
-  if (updateData.emergencyContact) {
-    updateObject.emergencyContact = {
-      ...patient.emergencyContact,
-      ...updateData.emergencyContact,
-    };
-  }
 
   const updatedPatient = await Patient.findByIdAndUpdate(id, updateObject, {
     new: true,
@@ -268,6 +291,7 @@ export const PatientController = {
   getAllPatients,
   getPatientById,
   getMyProfile,
+  updateMyProfile,
   updatePatient,
   deletePatient,
 };

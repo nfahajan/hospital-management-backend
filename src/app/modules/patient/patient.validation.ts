@@ -49,26 +49,6 @@ export const validateCreatePatient = (data: any) => {
     errors.push("Phone number is required");
   }
 
-  // Address validation
-  if (!data.address || typeof data.address !== "object") {
-    errors.push("Address is required");
-  } else {
-    const { street, city, state, zipCode, country } = data.address;
-    if (!street || !city || !state || !zipCode || !country) {
-      errors.push("All address fields are required");
-    }
-  }
-
-  // Emergency contact validation
-  if (!data.emergencyContact || typeof data.emergencyContact !== "object") {
-    errors.push("Emergency contact is required");
-  } else {
-    const { name, relationship, phoneNumber } = data.emergencyContact;
-    if (!name || !relationship || !phoneNumber) {
-      errors.push("All emergency contact fields are required");
-    }
-  }
-
   return errors;
 };
 

@@ -1,7 +1,10 @@
 import { Request, Response } from "express";
 import { StatusCodes } from "http-status-codes";
+import mongoose from "mongoose";
 import { Doctor } from "./doctor.model";
 import { User } from "../user/user.model";
+import { ScheduleController } from "../schedule/schedule.controller";
+import { ScheduleGenerationService } from "../schedule/schedule-generation.service";
 import sendResponse from "../../shared/sendResponse";
 import CustomAPIError from "../../errors/custom-api";
 import NotFoundError from "../../errors/not-found";
@@ -21,60 +24,75 @@ const createDoctor = async (req: Request, res: Response) => {
     );
   }
 
-  // Check if license number already exists
-  const existingDoctor = await Doctor.findOne({
-    licenseNumber: doctorData.licenseNumber,
-  });
-  if (existingDoctor) {
-    throw new CustomAPIError(
-      "License number already exists",
-      StatusCodes.CONFLICT
-    );
+  // Start database transaction
+  const session = await mongoose.startSession();
+
+  try {
+    await session.startTransaction();
+
+    // Create user account with approved status by default
+    const newUser = new User({
+      email: doctorData.email,
+      password: doctorData.password,
+      roles: ["doctor"],
+      status: "approved", // Auto-approved for doctors
+      auth_type: "standard",
+    });
+
+    const savedUser = await newUser.save({ session });
+
+    // Create doctor record
+    const newDoctor = new Doctor({
+      user: savedUser._id,
+      firstName: doctorData.firstName,
+      lastName: doctorData.lastName,
+      dateOfBirth: new Date(doctorData.dateOfBirth),
+      gender: doctorData.gender,
+      phoneNumber: doctorData.phoneNumber,
+      specialization: doctorData.specialization,
+      yearsOfExperience: doctorData.yearsOfExperience,
+      bio: doctorData.bio,
+      consultationFee: doctorData.consultationFee,
+      isAvailable:
+        doctorData.isAvailable !== undefined ? doctorData.isAvailable : true,
+    });
+
+    const savedDoctor = await newDoctor.save({ session });
+
+    // Generate initial schedules for the new doctor (next 30 days)
+    try {
+      await ScheduleGenerationService.generateInitialSchedules(
+        savedDoctor._id.toString()
+      );
+      console.log(
+        `Generated initial schedules for new doctor: ${savedDoctor._id}`
+      );
+    } catch (scheduleError) {
+      console.error("Error generating initial schedules:", scheduleError);
+      // Don't fail doctor creation if schedule generation fails
+      // Schedules can be created later when appointments are booked
+    }
+
+    // Commit the transaction
+    await session.commitTransaction();
+
+    // Populate user data for response
+    await savedDoctor.populate("user", "email roles status createdAt");
+
+    sendResponse(res, {
+      statusCode: StatusCodes.CREATED,
+      success: true,
+      message: "Doctor created successfully with default schedule",
+      data: savedDoctor,
+    });
+  } catch (error) {
+    // Rollback the transaction on error
+    await session.abortTransaction();
+    throw error;
+  } finally {
+    // End the session
+    await session.endSession();
   }
-
-  // Create user account with approved status by default
-  const newUser = new User({
-    email: doctorData.email,
-    password: doctorData.password,
-    roles: ["doctor"],
-    status: "approved", // Auto-approved for doctors
-    auth_type: "standard",
-  });
-
-  const savedUser = await newUser.save();
-
-  // Create doctor record
-  const newDoctor = new Doctor({
-    user: savedUser._id,
-    firstName: doctorData.firstName,
-    lastName: doctorData.lastName,
-    dateOfBirth: new Date(doctorData.dateOfBirth),
-    gender: doctorData.gender,
-    phoneNumber: doctorData.phoneNumber,
-    address: doctorData.address,
-    specialization: doctorData.specialization,
-    licenseNumber: doctorData.licenseNumber,
-    licenseExpiryDate: new Date(doctorData.licenseExpiryDate),
-    yearsOfExperience: doctorData.yearsOfExperience,
-    education: doctorData.education,
-    bio: doctorData.bio,
-    consultationFee: doctorData.consultationFee,
-    availableSlots: doctorData.availableSlots || [],
-    isAvailable:
-      doctorData.isAvailable !== undefined ? doctorData.isAvailable : true,
-  });
-
-  const savedDoctor = await newDoctor.save();
-
-  // Populate user data for response
-  await savedDoctor.populate("user", "email roles status createdAt");
-
-  sendResponse(res, {
-    statusCode: StatusCodes.CREATED,
-    success: true,
-    message: "Doctor created successfully",
-    data: savedDoctor,
-  });
 };
 
 // Get all doctors (admin only)
@@ -95,7 +113,6 @@ const getAllDoctors = async (req: Request, res: Response) => {
       { firstName: { $regex: search, $options: "i" } },
       { lastName: { $regex: search, $options: "i" } },
       { phoneNumber: { $regex: search, $options: "i" } },
-      { licenseNumber: { $regex: search, $options: "i" } },
     ];
   }
 
@@ -202,9 +219,9 @@ const getMyProfile = async (req: Request, res: Response) => {
 
 // Update doctor profile (doctors can update their own info)
 const updateDoctor = async (req: Request, res: Response) => {
-  const { id } = req.params;
   const updateData: IUpdateDoctor = req.body;
   const currentUser = req.user;
+  const id = req.params.id;
 
   if (!currentUser) {
     throw new ForbiddenError("Access denied");
@@ -236,30 +253,22 @@ const updateDoctor = async (req: Request, res: Response) => {
   if (updateData.phoneNumber) updateObject.phoneNumber = updateData.phoneNumber;
   if (updateData.specialization)
     updateObject.specialization = updateData.specialization;
-  if (updateData.licenseNumber)
-    updateObject.licenseNumber = updateData.licenseNumber;
-  if (updateData.licenseExpiryDate)
-    updateObject.licenseExpiryDate = new Date(updateData.licenseExpiryDate);
   if (updateData.yearsOfExperience !== undefined)
     updateObject.yearsOfExperience = updateData.yearsOfExperience;
-  if (updateData.education) updateObject.education = updateData.education;
   if (updateData.bio !== undefined) updateObject.bio = updateData.bio;
   if (updateData.consultationFee !== undefined)
     updateObject.consultationFee = updateData.consultationFee;
-  if (updateData.availableSlots)
-    updateObject.availableSlots = updateData.availableSlots;
   if (updateData.isAvailable !== undefined)
     updateObject.isAvailable = updateData.isAvailable;
 
-  // Handle nested objects
-  if (updateData.address) {
-    updateObject.address = { ...doctor.address, ...updateData.address };
-  }
-
-  const updatedDoctor = await Doctor.findByIdAndUpdate(id, updateObject, {
-    new: true,
-    runValidators: true,
-  }).populate("user", "email roles status createdAt");
+  const updatedDoctor = await Doctor.findByIdAndUpdate(
+    doctor._id,
+    updateObject,
+    {
+      new: true,
+      runValidators: true,
+    }
+  ).populate("user", "email roles status createdAt");
 
   sendResponse(res, {
     statusCode: StatusCodes.OK,
@@ -327,7 +336,6 @@ const getDoctorsBySpecialization = async (req: Request, res: Response) => {
     isAvailable: true,
   })
     .populate("user", "email roles status createdAt")
-    .select("-availableSlots") // Don't expose detailed schedule
     .sort({ yearsOfExperience: -1 })
     .skip(skip)
     .limit(limit);
@@ -356,6 +364,197 @@ const getDoctorsBySpecialization = async (req: Request, res: Response) => {
   });
 };
 
+// Get doctor dashboard statistics
+const getDoctorDashboardStats = async (req: Request, res: Response) => {
+  try {
+    const currentUser = req.user;
+
+    if (!currentUser) {
+      throw new ForbiddenError("Access denied");
+    }
+
+    const doctor = await Doctor.findOne({ user: currentUser._id });
+    if (!doctor) {
+      throw new NotFoundError("Doctor not found");
+    }
+    const doctorId = doctor._id;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const weekStart = new Date(today);
+    weekStart.setDate(today.getDate() - today.getDay());
+    const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+
+    // Import models here to avoid circular dependency
+    const { Appointment } = await import("../appointment/appointment.model");
+    const { Patient } = await import("../patient/patient.model");
+
+    const [
+      totalAppointments,
+      todayAppointments,
+      upcomingAppointments,
+      completedAppointments,
+      cancelledAppointments,
+      weeklyAppointments,
+      monthlyAppointments,
+      uniquePatients,
+      recentAppointments,
+      appointmentTrends,
+    ] = await Promise.all([
+      // Total appointments for this doctor
+      Appointment.countDocuments({ doctor: doctorId }),
+
+      // Today's appointments
+      Appointment.countDocuments({
+        doctor: doctorId,
+        appointmentDate: { $gte: today, $lt: tomorrow },
+        status: { $in: ["scheduled", "confirmed", "in_progress"] },
+      }),
+
+      // Upcoming appointments (next 7 days)
+      Appointment.countDocuments({
+        doctor: doctorId,
+        appointmentDate: {
+          $gte: tomorrow,
+          $lte: new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000),
+        },
+        status: { $in: ["scheduled", "confirmed"] },
+      }),
+
+      // Completed appointments
+      Appointment.countDocuments({
+        doctor: doctorId,
+        status: "completed",
+      }),
+
+      // Cancelled appointments
+      Appointment.countDocuments({
+        doctor: doctorId,
+        status: { $in: ["cancelled", "no_show"] },
+      }),
+
+      // Weekly appointments
+      Appointment.countDocuments({
+        doctor: doctorId,
+        appointmentDate: { $gte: weekStart },
+        status: { $in: ["scheduled", "confirmed", "in_progress", "completed"] },
+      }),
+
+      // Monthly appointments
+      Appointment.countDocuments({
+        doctor: doctorId,
+        appointmentDate: { $gte: monthStart },
+        status: { $in: ["scheduled", "confirmed", "in_progress", "completed"] },
+      }),
+
+      // Unique patients count
+      Appointment.distinct("patient", { doctor: doctorId }).then(
+        (patients: any[]) => patients.length
+      ),
+
+      // Recent appointments (last 5)
+      Appointment.find({ doctor: doctorId })
+        .populate("patient", "firstName lastName phoneNumber user")
+        .populate({
+          path: "patient",
+          populate: {
+            path: "user",
+            select: "email",
+          },
+        })
+        .sort({ appointmentDate: -1, startTime: -1 })
+        .limit(5)
+        .lean(),
+
+      // Appointment trends for the last 30 days
+      Appointment.aggregate([
+        {
+          $match: {
+            doctor: doctorId,
+            appointmentDate: {
+              $gte: new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000),
+            },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              $dateToString: {
+                format: "%Y-%m-%d",
+                date: "$appointmentDate",
+              },
+            },
+            count: { $sum: 1 },
+            completed: {
+              $sum: {
+                $cond: [{ $eq: ["$status", "completed"] }, 1, 0],
+              },
+            },
+            cancelled: {
+              $sum: {
+                $cond: [{ $in: ["$status", ["cancelled", "no_show"]] }, 1, 0],
+              },
+            },
+          },
+        },
+        {
+          $sort: { _id: 1 },
+        },
+        {
+          $limit: 30,
+        },
+      ]),
+    ]);
+
+    // Calculate completion rate
+    const completionRate =
+      totalAppointments > 0
+        ? Math.round((completedAppointments / totalAppointments) * 100)
+        : 0;
+
+    // Calculate cancellation rate
+    const cancellationRate =
+      totalAppointments > 0
+        ? Math.round((cancelledAppointments / totalAppointments) * 100)
+        : 0;
+
+    const stats = {
+      overview: {
+        totalAppointments,
+        todayAppointments,
+        upcomingAppointments,
+        completedAppointments,
+        cancelledAppointments,
+        uniquePatients,
+        completionRate,
+        cancellationRate,
+      },
+      trends: {
+        weekly: weeklyAppointments,
+        monthly: monthlyAppointments,
+        dailyTrends: appointmentTrends,
+      },
+      recentAppointments,
+    };
+
+    sendResponse(res, {
+      statusCode: StatusCodes.OK,
+      success: true,
+      message: "Doctor dashboard statistics retrieved successfully",
+      data: stats,
+    });
+  } catch (error: any) {
+    sendResponse(res, {
+      statusCode: StatusCodes.INTERNAL_SERVER_ERROR,
+      success: false,
+      message: "Failed to retrieve doctor dashboard statistics",
+      data: null,
+    });
+  }
+};
+
 export const DoctorController = {
   createDoctor,
   getAllDoctors,
@@ -364,4 +563,5 @@ export const DoctorController = {
   updateDoctor,
   deleteDoctor,
   getDoctorsBySpecialization,
+  getDoctorDashboardStats,
 };

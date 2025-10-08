@@ -57,12 +57,17 @@ router.get(
   "/specialization/:specialization",
   DoctorController.getDoctorsBySpecialization
 );
+// Get all doctors (with pagination and filtering)
+router.get("/", DoctorController.getAllDoctors);
 
 // Protected routes - Authentication required
 router.use(auth);
 
 // Get current doctor's profile
 router.get("/me", DoctorController.getMyProfile);
+
+// Get doctor dashboard statistics
+router.get("/dashboard/stats", DoctorController.getDoctorDashboardStats);
 
 // Update current doctor's profile
 router.put(
@@ -76,9 +81,6 @@ router.use(hasRole("admin", "superadmin"));
 
 // Create a new doctor
 router.post("/", validateCreateDoctorMiddleware, DoctorController.createDoctor);
-
-// Get all doctors (with pagination and filtering)
-router.get("/", DoctorController.getAllDoctors);
 
 // Get doctor by ID
 router.get("/:id", validateDoctorIdMiddleware, DoctorController.getDoctorById);

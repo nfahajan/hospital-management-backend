@@ -104,6 +104,12 @@ router.get("/my-appointments", AppointmentController.getMyAppointments);
 // Get current doctor's appointments
 router.get("/doctor-appointments", AppointmentController.getDoctorAppointments);
 
+// Get patient's appointments for a specific date
+router.get(
+  "/my-appointments/date/:date",
+  AppointmentController.getPatientAppointmentsForDate
+);
+
 // Create a new appointment
 router.post(
   "/",

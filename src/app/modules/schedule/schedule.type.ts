@@ -1,94 +1,64 @@
-import { Document, Model } from "mongoose";
+import { Document, Types, Model } from "mongoose";
 
-export type DayOfWeek =
-  | "monday"
-  | "tuesday"
-  | "wednesday"
-  | "thursday"
-  | "friday"
-  | "saturday"
-  | "sunday";
-
+// Time slot interface
 export interface ITimeSlot {
-  startTime: string; // HH:MM format
-  endTime: string; // HH:MM format
+  startTime: string; // Format: "09:00"
+  endTime: string; // Format: "10:00"
   isAvailable: boolean;
-  maxAppointments?: number; // Optional limit for appointments in this slot
-  currentAppointments?: number; // Current number of appointments booked
+  maxAppointments: number;
+  currentAppointments: number;
 }
 
-export interface IDaySchedule {
-  dayOfWeek: DayOfWeek;
-  isWorkingDay: boolean;
-  timeSlots: ITimeSlot[];
-}
-
+// Schedule interface
 export interface ISchedule extends Document {
-  _id: any;
-  doctor: any; // Reference to Doctor model
-  weekStartDate: Date;
-  weekEndDate: Date;
-  monday: IDaySchedule;
-  tuesday: IDaySchedule;
-  wednesday: IDaySchedule;
-  thursday: IDaySchedule;
-  friday: IDaySchedule;
-  saturday: IDaySchedule;
-  sunday: IDaySchedule;
+  doctor: Types.ObjectId;
+  date: Date; // Specific date (e.g., 2025-01-15)
+  timeSlots: ITimeSlot[];
   isActive: boolean;
   notes?: string;
   createdAt: Date;
   updatedAt: Date;
+  updateSlotAvailability(): ISchedule;
 }
 
-export type ScheduleModel = Model<ISchedule> & {
+// Schedule model interface
+export interface ScheduleModel extends Model<ISchedule> {
   findByDoctorAndDate(doctorId: string, date: Date): Promise<ISchedule | null>;
-  getAvailableSlots(doctorId: string, date: string): Promise<any[]>;
-};
-
-export interface ICreateSchedule {
-  doctorId: string;
-  weekStartDate: string;
-  weekEndDate: string;
-  monday: IDaySchedule;
-  tuesday: IDaySchedule;
-  wednesday: IDaySchedule;
-  thursday: IDaySchedule;
-  friday: IDaySchedule;
-  saturday: IDaySchedule;
-  sunday: IDaySchedule;
-  isActive?: boolean;
-  notes?: string;
+  getAvailableSlots(doctorId: string, date: string): Promise<ITimeSlot[]>;
+  createDefaultSchedule(doctorId: string, date: Date): Promise<ISchedule>;
 }
 
-export interface IUpdateSchedule {
-  weekStartDate?: string;
-  weekEndDate?: string;
-  monday?: Partial<IDaySchedule>;
-  tuesday?: Partial<IDaySchedule>;
-  wednesday?: Partial<IDaySchedule>;
-  thursday?: Partial<IDaySchedule>;
-  friday?: Partial<IDaySchedule>;
-  saturday?: Partial<IDaySchedule>;
-  sunday?: Partial<IDaySchedule>;
-  isActive?: boolean;
-  notes?: string;
-}
-
-export interface IUpdateDaySchedule {
-  dayOfWeek: DayOfWeek;
-  isWorkingDay?: boolean;
-  timeSlots?: ITimeSlot[];
-}
-
-export interface IGetAvailableSlots {
-  doctorId: string;
-  date: string; // YYYY-MM-DD format
-}
-
-export interface IAvailableSlot {
+// Form data interfaces
+export interface CreateScheduleData {
+  doctor: string;
   date: string;
-  dayOfWeek: DayOfWeek;
-  timeSlot: ITimeSlot;
-  availableSpots: number;
+  timeSlots: {
+    startTime: string;
+    endTime: string;
+    isAvailable: boolean;
+    maxAppointments: number;
+    currentAppointments: number;
+  }[];
+  isActive: boolean;
+  notes?: string;
+}
+
+export interface UpdateScheduleData {
+  timeSlots?: {
+    startTime: string;
+    endTime: string;
+    isAvailable: boolean;
+    maxAppointments: number;
+    currentAppointments: number;
+  }[];
+  isActive?: boolean;
+  notes?: string;
+}
+
+export interface TimeSlotFormData {
+  startTime: string;
+  endTime: string;
+  isAvailable: boolean;
+  maxAppointments: number;
+  currentAppointments: number;
 }

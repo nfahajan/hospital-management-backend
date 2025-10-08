@@ -28,10 +28,9 @@ export interface IAppointment extends Document {
   reason: string;
   symptoms?: string;
   notes?: string;
+  diagnosis?: string;
+  prescription?: string;
   isUrgent: boolean;
-  estimatedDuration: number; // in minutes
-  actualDuration?: number; // in minutes (filled after completion)
-  consultationFee: number;
   paymentStatus: "pending" | "paid" | "refunded";
   cancellationReason?: string;
   cancelledBy?: "patient" | "doctor" | "admin";
@@ -46,12 +45,33 @@ export type AppointmentModel = Model<IAppointment> & {
     appointmentDate: string,
     startTime: string,
     endTime: string,
-    excludeAppointmentId?: string
+    excludeAppointmentId?: string,
+    patientId?: string
   ): Promise<{
     available: boolean;
     reason: string;
     currentAppointments?: number;
     maxAppointments?: number;
+    existingAppointment?: {
+      id: string;
+      date: Date;
+      startTime: string;
+      endTime: string;
+      status: AppointmentStatus;
+      type: AppointmentType;
+      reason: string;
+      doctor: {
+        id: string;
+        name: string;
+        specialization: string;
+        consultationFee: number;
+      };
+      patient: {
+        id: string;
+        name: string;
+        phoneNumber: string;
+      };
+    };
   }>;
   getAppointmentStats(
     doctorId?: string,
@@ -83,6 +103,8 @@ export interface IUpdateAppointment {
   type?: AppointmentType;
   reason?: string;
   symptoms?: string;
+  diagnosis?: string;
+  prescription?: string;
   notes?: string;
   isUrgent?: boolean;
   estimatedDuration?: number;

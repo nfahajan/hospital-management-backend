@@ -19,21 +19,7 @@ export interface IPatient extends Document {
   dateOfBirth: Date;
   gender: Gender;
   phoneNumber: string;
-  address: {
-    street: string;
-    city: string;
-    state: string;
-    zipCode: string;
-    country: string;
-  };
-  emergencyContact: {
-    name: string;
-    relationship: string;
-    phoneNumber: string;
-  };
   bloodGroup?: BloodGroup;
-  allergies?: string[];
-  medicalHistory?: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -48,21 +34,7 @@ export interface ICreatePatient {
   dateOfBirth: string;
   gender: Gender;
   phoneNumber: string;
-  address: {
-    street: string;
-    city: string;
-    state: string;
-    zipCode: string;
-    country: string;
-  };
-  emergencyContact: {
-    name: string;
-    relationship: string;
-    phoneNumber: string;
-  };
   bloodGroup?: BloodGroup;
-  allergies?: string[];
-  medicalHistory?: string[];
 }
 
 export interface IUpdatePatient {
@@ -71,19 +43,5 @@ export interface IUpdatePatient {
   dateOfBirth?: string;
   gender?: Gender;
   phoneNumber?: string;
-  address?: {
-    street?: string;
-    city?: string;
-    state?: string;
-    zipCode?: string;
-    country?: string;
-  };
-  emergencyContact?: {
-    name?: string;
-    relationship?: string;
-    phoneNumber?: string;
-  };
   bloodGroup?: BloodGroup;
-  allergies?: string[];
-  medicalHistory?: string[];
 }
